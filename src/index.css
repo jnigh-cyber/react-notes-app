@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* The docs embed component source in code blocks and the verify script matches
+   on class names, so Tailwind's automatic scanning would generate CSS for
+   classes the app does not actually use. Keep generation driven by src/ only. */
+@source not "../docs";
+@source not "../scripts";
+
 @custom-variant dark (&:where(.dark, .dark *));
 
 html,
