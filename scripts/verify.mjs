@@ -98,15 +98,35 @@ function boot(preloadedState = null) {
   return { dom, win };
 }
 
-function run(win) {
+// React 19 renders concurrently, so a 0ms tick can land before the first
+// commit. 25ms clears it in the common case.
+const tick = (ms = 25) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Poll until `predicate` holds. Fixed sleeps are flaky here: jsdom runs
+ * injected scripts through an async resource queue and React commits
+ * concurrently, so under load a fixed wait can land before the first paint.
+ */
+async function waitFor(predicate, { timeout = 5000, interval = 5 } = {}) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    if (predicate()) return true;
+    if (Date.now() > deadline) return false;
+    await new Promise((r) => setTimeout(r, interval));
+  }
+}
+
+async function run(win) {
   const script = win.document.createElement("script");
   script.textContent = code;
   win.document.body.appendChild(script);
-}
 
-// React 19 renders concurrently, so a 0ms tick can land before the first
-// commit. 25ms is comfortably past it without slowing the suite down.
-const tick = (ms = 25) => new Promise((r) => setTimeout(r, ms));
+  const rendered = await waitFor(
+    () => win.document.getElementById("root")?.childElementCount > 0
+  );
+  if (!rendered) throw new Error("app never rendered into #root");
+  await tick();
+}
 
 // --- DOM helpers --------------------------------------------------------
 const q = (win, sel) => win.document.querySelector(sel);
@@ -134,7 +154,7 @@ const titles = (win) => allByTest(win, "note-title").map((el) => el.textContent)
 // ========================================================================
 {
   const { win } = boot();
-  run(win);
+  await run(win);
   await tick();
 
   check("1. boots to the empty state", () => {
@@ -324,7 +344,7 @@ const titles = (win) => allByTest(win, "note-title").map((el) => el.textContent)
     { id: "new", body: "# Newer note", createdAt: 2, updatedAt: 2000 },
   ]);
   const { win } = boot({ [NOTES_KEY]: stored });
-  run(win);
+  await run(win);
   await tick();
 
   check("20. rehydrates notes from localStorage on load", () => {
@@ -356,7 +376,7 @@ const titles = (win) => allByTest(win, "note-title").map((el) => el.textContent)
 // ========================================================================
 {
   const { win } = boot({ [NOTES_KEY]: "{{{ not json at all" });
-  run(win);
+  await run(win);
   await tick();
 
   check("24. corrupt stored JSON boots to an empty app, not a crash", () => {
@@ -370,8 +390,9 @@ const titles = (win) => allByTest(win, "note-title").map((el) => el.textContent)
 // ========================================================================
 {
   const { win } = boot();
-  run(win);
-  await tick();
+  await run(win);
+  // Theme is written to storage by an effect, so wait for it to land.
+  await waitFor(() => win.localStorage.getItem(THEME_KEY) !== null);
 
   const html = win.document.documentElement;
 
@@ -381,7 +402,7 @@ const titles = (win) => allByTest(win, "note-title").map((el) => el.textContent)
   });
 
   click(win, byTest(win, "theme-toggle"));
-  await tick();
+  await waitFor(() => html.classList.contains("dark"));
 
   check("26. toggling adds the .dark class to <html>", () => {
     assert(html.classList.contains("dark"), ".dark class not applied");
@@ -389,7 +410,7 @@ const titles = (win) => allByTest(win, "note-title").map((el) => el.textContent)
   });
 
   click(win, byTest(win, "theme-toggle"));
-  await tick();
+  await waitFor(() => !html.classList.contains("dark"));
 
   check("27. toggling back removes it", () => {
     assert(!html.classList.contains("dark"), ".dark class not removed");
@@ -399,8 +420,10 @@ const titles = (win) => allByTest(win, "note-title").map((el) => el.textContent)
 
 {
   const { win } = boot({ [THEME_KEY]: "dark" });
-  run(win);
-  await tick();
+  await run(win);
+  // The .dark class is applied by an effect, which lands after the first
+  // commit; wait for it rather than assuming a fixed delay covers it.
+  await waitFor(() => win.document.documentElement.classList.contains("dark"));
 
   check("28. a stored dark theme survives a reload", () => {
     assert(win.document.documentElement.classList.contains("dark"), "theme did not persist");
@@ -410,8 +433,8 @@ const titles = (win) => allByTest(win, "note-title").map((el) => el.textContent)
 {
   const { win } = boot();
   win.__prefersDark = true;
-  run(win);
-  await tick();
+  await run(win);
+  await waitFor(() => win.document.documentElement.classList.contains("dark"));
 
   check("29. with nothing stored, follows the OS dark preference", () => {
     assert(
@@ -426,7 +449,7 @@ const titles = (win) => allByTest(win, "note-title").map((el) => el.textContent)
 // ========================================================================
 {
   const { win } = boot();
-  run(win);
+  await run(win);
   await tick();
   click(win, byTest(win, "new-note"));
   await tick();
